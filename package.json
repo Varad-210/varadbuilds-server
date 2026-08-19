@@ -1,0 +1,31 @@
+{
+  "name": "varadbuilds-server",
+  "version": "1.0.0",
+  "description": "Backend server for VaradBuilds booking system",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "booking",
+    "mongodb",
+    "express",
+    "api"
+  ],
+  "author": "VaradBuilds",
+  "license": "ISC",
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "@supabase/supabase-js": "^2.112.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "nodemailer": "^9.0.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1",
+    "prisma": "^6.19.3"
+  }
+}
