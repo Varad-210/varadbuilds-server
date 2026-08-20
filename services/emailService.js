@@ -1,23 +1,18 @@
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
 
-const createTransporter = () => {
-  return nodemailer.createTransport({
-    service: process.env.EMAIL_SERVICE || 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  });
-};
+const getResend = () => new Resend(process.env.RESEND_API_KEY);
 
 const sendBookingEmails = async (bookingData) => {
   try {
-    const transporter = createTransporter();
+    const resend = getResend();
+
+    const adminEmail = process.env.ADMIN_EMAIL || 'sontakkevarad210@gmail.com';
+    const fromAddress = 'VaradBuilds <onboarding@resend.dev>';
 
     // 1. Email to the Admin/Owner
-    const adminMailOptions = {
-      from: process.env.EMAIL_USER,
-      to: process.env.ADMIN_EMAIL || process.env.EMAIL_USER,
+    await resend.emails.send({
+      from: fromAddress,
+      to: adminEmail,
       subject: 'New Strategy Call Booking! 🎉',
       html: `
         <h2>New Strategy Call Booking</h2>
@@ -34,15 +29,12 @@ const sendBookingEmails = async (bookingData) => {
           <li><strong>Message:</strong> ${bookingData.message || 'N/A'}</li>
         </ul>
       `,
-    };
-
-    // Send admin email
-    await transporter.sendMail(adminMailOptions);
+    });
 
     // 2. Email to the User (Only if they provided an email)
     if (bookingData.email) {
-      const userMailOptions = {
-        from: process.env.EMAIL_USER,
+      await resend.emails.send({
+        from: fromAddress,
         to: bookingData.email,
         subject: 'Your Strategy Call is Booked! 🚀',
         html: `
@@ -58,14 +50,12 @@ const sendBookingEmails = async (bookingData) => {
             <p>Best regards,<br/><strong>VaradBuilds Team</strong></p>
           </div>
         `,
-      };
-
-      await transporter.sendMail(userMailOptions);
+      });
     }
 
-    console.log('Booking emails sent successfully');
+    console.log('✅ Booking emails sent successfully via Resend');
   } catch (error) {
-    console.error('Error sending booking emails:', error);
+    console.error('⚠️ Error sending booking emails:', error);
     // Don't throw the error so it doesn't block the booking creation
   }
 };
@@ -73,3 +63,4 @@ const sendBookingEmails = async (bookingData) => {
 module.exports = {
   sendBookingEmails,
 };
+
