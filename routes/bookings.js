@@ -1,7 +1,6 @@
 const express = require('express');
 const router = express.Router();
 const prisma = require('../prisma');
-const { sendBookingEmails } = require('../services/emailService');
 
 // ============================================================
 // CREATE NEW BOOKING
@@ -94,21 +93,6 @@ router.post('/', async (req, res) => {
     console.log('✅ BOOKING SAVED TO POSTGRESQL');
     console.log('Booking ID:', booking.id);
     console.log('========================================');
-
-    // --------------------------------------------------------
-    // SEND EMAILS
-    // IMPORTANT:
-    // Database save has already succeeded.
-    // Even if email fails, the booking remains saved.
-    // --------------------------------------------------------
-    try {
-      await sendBookingEmails(booking);
-
-      console.log('📧 Booking emails processed successfully');
-    } catch (emailError) {
-      console.error('⚠️ EMAIL FAILED');
-      console.error(emailError);
-    }
 
     // --------------------------------------------------------
     // SUCCESS RESPONSE
