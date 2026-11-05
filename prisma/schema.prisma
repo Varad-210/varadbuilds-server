@@ -12,7 +12,7 @@ model Booking {
   customerName  String
   phoneNumber   String
   email         String?
-  businessType  String
+  businessName  String?
   serviceType   String
   preferredDate DateTime
   preferredTime String

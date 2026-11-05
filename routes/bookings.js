@@ -1,205 +1,246 @@
 const express = require('express');
 const router = express.Router();
 const prisma = require('../prisma');
+const requireAdmin = require('../middleware/requireAdmin');
+const { createSubmitLimiter } = require('../middleware/rateLimit');
+const { toText, parsePagination } = require('../utils/request');
+
+const submitLimiter = createSubmitLimiter();
+
+// The public form only ever sends these values; anything else is rejected
+// rather than written to the database.
+const ALLOWED_SERVICE_TYPES = [
+  'Website',
+  'Custom Software',
+  'Meta Ads',
+  'Restaurant POS / QR Ordering',
+  'Not sure yet',
+];
+
+const ALLOWED_STATUSES = ['pending', 'confirmed', 'completed', 'cancelled'];
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // ============================================================
-// CREATE NEW BOOKING
+// CREATE NEW BOOKING  (public)
 // POST /api/bookings
 // ============================================================
-router.post('/', async (req, res) => {
-  console.log('\n========================================');
-  console.log('📥 NEW BOOKING REQUEST');
-  console.log('========================================');
-  console.log('Request body:', req.body);
+router.post('/', submitLimiter, async (req, res) => {
+  const body = req.body || {};
+
+  const customerName = toText(body.customerName);
+  const phoneNumber = toText(body.phoneNumber);
+  const businessName = toText(body.businessName);
+  const serviceType = toText(body.serviceType);
+  const preferredTime = toText(body.preferredTime, { maxLength: 100 });
+  const city = toText(body.city, { maxLength: 200 });
+  const email = toText(body.email, { maxLength: 254 });
+  const message = toText(body.message);
+
+  const requiredFields = {
+    customerName,
+    phoneNumber,
+    businessName,
+    serviceType,
+    preferredTime,
+    city,
+  };
+
+  if (email && !EMAIL_PATTERN.test(email)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid email address.',
+    });
+  }
+
+  const missingFields = Object.entries(requiredFields)
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+
+  if (typeof body.preferredDate !== 'string' || !body.preferredDate) {
+    missingFields.push('preferredDate');
+  }
+
+  if (missingFields.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: 'Please fill all required fields.',
+      missingFields,
+    });
+  }
+
+  if (!ALLOWED_SERVICE_TYPES.includes(serviceType)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Unknown serviceType.',
+      allowed: ALLOWED_SERVICE_TYPES,
+    });
+  }
+
+  const parsedDate = new Date(body.preferredDate);
+
+  if (Number.isNaN(parsedDate.getTime())) {
+    return res.status(400).json({
+      success: false,
+      message: 'Invalid preferred date.',
+    });
+  }
+
+  // 'status' and 'source' are intentionally not read from the request; the
+  // database defaults them to 'pending' / 'website'.
+  const bookingData = {
+    customerName,
+    phoneNumber,
+    businessName,
+    serviceType,
+    preferredTime,
+    city,
+    email,
+    message,
+    preferredDate: parsedDate,
+  };
 
   try {
-    const {
-      customerName,
-      email,
-      phoneNumber,
-      businessType,
-      serviceType,
-      preferredDate,
-      preferredTime,
-      city,
-      message,
-    } = req.body;
+    const booking = await prisma.booking.create({ data: bookingData });
 
-    // --------------------------------------------------------
-    // Validate required fields
-    // --------------------------------------------------------
-    const missingFields = [];
+    console.log('✅ Booking saved:', booking.id);
 
-    if (!customerName) missingFields.push('customerName');
-    if (!phoneNumber) missingFields.push('phoneNumber');
-    if (!businessType) missingFields.push('businessType');
-    if (!serviceType) missingFields.push('serviceType');
-    if (!preferredDate) missingFields.push('preferredDate');
-    if (!preferredTime) missingFields.push('preferredTime');
-    if (!city) missingFields.push('city');
-
-    if (missingFields.length > 0) {
-      console.error('❌ Missing fields:', missingFields);
-
-      return res.status(400).json({
-        success: false,
-        message: 'Please fill all required fields.',
-        missingFields,
-      });
-    }
-
-    // --------------------------------------------------------
-    // Validate date
-    // --------------------------------------------------------
-    const parsedDate = new Date(preferredDate);
-
-    if (Number.isNaN(parsedDate.getTime())) {
-      console.error('❌ Invalid preferredDate:', preferredDate);
-
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid preferred date.',
-      });
-    }
-
-    // --------------------------------------------------------
-    // Prepare data for Prisma
-    // --------------------------------------------------------
-    const bookingData = {
-      customerName: String(customerName).trim(),
-      email: email ? String(email).trim() : null,
-      phoneNumber: String(phoneNumber).trim(),
-      businessType: String(businessType).trim(),
-      serviceType: String(serviceType).trim(),
-      preferredDate: parsedDate,
-      preferredTime: String(preferredTime).trim(),
-      city: String(city).trim(),
-      message: message
-        ? String(message).trim()
-        : null,
-    };
-
-    console.log('📦 Data being sent to PostgreSQL:');
-    console.log(bookingData);
-
-    // --------------------------------------------------------
-    // SAVE BOOKING TO POSTGRESQL
-    // --------------------------------------------------------
-    const booking = await prisma.booking.create({
-      data: bookingData,
-    });
-
-    console.log('========================================');
-    console.log('✅ BOOKING SAVED TO POSTGRESQL');
-    console.log('Booking ID:', booking.id);
-    console.log('========================================');
-
-    // --------------------------------------------------------
-    // SUCCESS RESPONSE
-    // --------------------------------------------------------
     return res.status(201).json({
       success: true,
       message: 'Booking created successfully.',
       data: booking,
     });
-
   } catch (error) {
-    // --------------------------------------------------------
-    // DATABASE / PRISMA ERROR
-    // --------------------------------------------------------
-    console.error('\n========================================');
-    console.error('❌ BOOKING CREATION FAILED');
-    console.error('========================================');
-
-    console.error('Error name:', error.name);
-    console.error('Error message:', error.message);
-    console.error('Error code:', error.code || 'N/A');
-    console.error('Full error:', error);
+    console.error('❌ BOOKING CREATION FAILED', {
+      name: error.name,
+      code: error.code,
+      message: error.message,
+    });
 
     return res.status(500).json({
       success: false,
       message: 'Unable to save booking.',
-      error: error.message,
-      code: error.code || null,
     });
   }
 });
 
 
 // ============================================================
-// GET ALL BOOKINGS
-// GET /api/bookings
+// BOOKING STATISTICS  (admin)
+// GET /api/bookings/stats/overview
 // ============================================================
-router.get('/', async (req, res) => {
+router.get('/stats/overview', requireAdmin, async (req, res) => {
   try {
-    const {
-      page = 1,
-      limit = 10,
-      status,
-      businessType,
-    } = req.query;
+    const [totalBookings, pendingBookings, confirmedBookings, completedBookings] =
+      await Promise.all([
+        prisma.booking.count(),
+        prisma.booking.count({ where: { status: 'pending' } }),
+        prisma.booking.count({ where: { status: 'confirmed' } }),
+        prisma.booking.count({ where: { status: 'completed' } }),
+      ]);
 
-    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
-    const limitNum = Math.min(
-      Math.max(parseInt(limit, 10) || 10, 1),
-      100
-    );
-
-    const filter = {};
-
-    if (status) {
-      filter.status = status;
-    }
-
-    if (businessType) {
-      filter.businessType = businessType;
-    }
-
-    const bookings = await prisma.booking.findMany({
-      where: filter,
-      orderBy: {
-        createdAt: 'desc',
-      },
-      take: limitNum,
-      skip: (pageNum - 1) * limitNum,
-    });
-
-    const total = await prisma.booking.count({
-      where: filter,
+    const bookingsByServiceType = await prisma.booking.groupBy({
+      by: ['serviceType'],
+      _count: { serviceType: true },
     });
 
     return res.json({
       success: true,
-      data: bookings,
-      totalPages: Math.ceil(total / limitNum),
-      currentPage: pageNum,
-      total,
+      data: {
+        total: totalBookings,
+        pending: pendingBookings,
+        confirmed: confirmedBookings,
+        completed: completedBookings,
+        byServiceType: bookingsByServiceType.map((item) => ({
+          _id: item.serviceType,
+          count: item._count.serviceType,
+        })),
+      },
     });
-
   } catch (error) {
-    console.error('❌ Error fetching bookings:', error);
+    console.error('❌ Error fetching booking statistics:', error.message);
 
     return res.status(500).json({
       success: false,
-      message: 'Error fetching bookings.',
-      error: error.message,
+      message: 'Error fetching booking statistics.',
     });
   }
 });
 
 
 // ============================================================
-// GET SINGLE BOOKING
+// GET ALL BOOKINGS  (admin)
+// GET /api/bookings
+// ============================================================
+router.get('/', requireAdmin, async (req, res) => {
+  const { page, limit } = parsePagination(req.query);
+
+  const status = toText(req.query.status, { maxLength: 50 });
+  const serviceType = toText(req.query.serviceType, { maxLength: 100 });
+
+  const filter = {};
+
+  // An empty query value means "no filter", matching the previous behaviour.
+  if (req.query.status) {
+    if (!ALLOWED_STATUSES.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Unknown status.',
+        allowed: ALLOWED_STATUSES,
+      });
+    }
+
+    filter.status = status;
+  }
+
+  if (req.query.serviceType) {
+    if (!serviceType) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid serviceType.',
+      });
+    }
+
+    filter.serviceType = serviceType;
+  }
+
+  try {
+    const [bookings, total] = await Promise.all([
+      prisma.booking.findMany({
+        where: filter,
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip: (page - 1) * limit,
+      }),
+      prisma.booking.count({ where: filter }),
+    ]);
+
+    return res.json({
+      success: true,
+      data: bookings,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page,
+      total,
+    });
+  } catch (error) {
+    console.error('❌ Error fetching bookings:', error.message);
+
+    return res.status(500).json({
+      success: false,
+      message: 'Error fetching bookings.',
+    });
+  }
+});
+
+
+// ============================================================
+// GET SINGLE BOOKING  (admin)
 // GET /api/bookings/:id
 // ============================================================
-router.get('/:id', async (req, res) => {
+router.get('/:id', requireAdmin, async (req, res) => {
   try {
-    const { id } = req.params;
-
     const booking = await prisma.booking.findUnique({
-      where: {
-        id,
-      },
+      where: { id: req.params.id },
     });
 
     if (!booking) {
@@ -209,46 +250,37 @@ router.get('/:id', async (req, res) => {
       });
     }
 
-    return res.json({
-      success: true,
-      data: booking,
-    });
-
+    return res.json({ success: true, data: booking });
   } catch (error) {
-    console.error('❌ Error fetching booking:', error);
+    console.error('❌ Error fetching booking:', error.message);
 
     return res.status(500).json({
       success: false,
       message: 'Error fetching booking.',
-      error: error.message,
     });
   }
 });
 
 
 // ============================================================
-// UPDATE BOOKING STATUS
+// UPDATE BOOKING STATUS  (admin)
 // PATCH /api/bookings/:id/status
 // ============================================================
-router.patch('/:id/status', async (req, res) => {
+router.patch('/:id/status', requireAdmin, async (req, res) => {
+  const status = toText(req.body?.status, { maxLength: 50 });
+
+  if (!ALLOWED_STATUSES.includes(status)) {
+    return res.status(400).json({
+      success: false,
+      message: 'Unknown status.',
+      allowed: ALLOWED_STATUSES,
+    });
+  }
+
   try {
-    const { id } = req.params;
-    const { status } = req.body;
-
-    if (!status) {
-      return res.status(400).json({
-        success: false,
-        message: 'Status is required.',
-      });
-    }
-
     const booking = await prisma.booking.update({
-      where: {
-        id,
-      },
-      data: {
-        status,
-      },
+      where: { id: req.params.id },
+      data: { status },
     });
 
     return res.json({
@@ -256,108 +288,35 @@ router.patch('/:id/status', async (req, res) => {
       message: 'Booking status updated.',
       data: booking,
     });
-
   } catch (error) {
-    console.error('❌ Error updating booking status:', error);
+    console.error('❌ Error updating booking status:', error.message);
 
     return res.status(500).json({
       success: false,
       message: 'Error updating booking status.',
-      error: error.message,
     });
   }
 });
 
 
 // ============================================================
-// DELETE BOOKING
+// DELETE BOOKING  (admin)
 // DELETE /api/bookings/:id
 // ============================================================
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireAdmin, async (req, res) => {
   try {
-    const { id } = req.params;
-
-    await prisma.booking.delete({
-      where: {
-        id,
-      },
-    });
+    await prisma.booking.delete({ where: { id: req.params.id } });
 
     return res.json({
       success: true,
       message: 'Booking deleted successfully.',
     });
-
   } catch (error) {
-    console.error('❌ Error deleting booking:', error);
+    console.error('❌ Error deleting booking:', error.message);
 
     return res.status(500).json({
       success: false,
       message: 'Error deleting booking.',
-      error: error.message,
-    });
-  }
-});
-
-
-// ============================================================
-// BOOKING STATISTICS
-// GET /api/bookings/stats/overview
-// ============================================================
-router.get('/stats/overview', async (req, res) => {
-  try {
-    const totalBookings = await prisma.booking.count();
-
-    const pendingBookings = await prisma.booking.count({
-      where: {
-        status: 'pending',
-      },
-    });
-
-    const confirmedBookings = await prisma.booking.count({
-      where: {
-        status: 'confirmed',
-      },
-    });
-
-    const completedBookings = await prisma.booking.count({
-      where: {
-        status: 'completed',
-      },
-    });
-
-    const bookingsByBusinessType =
-      await prisma.booking.groupBy({
-        by: ['businessType'],
-        _count: {
-          businessType: true,
-        },
-      });
-
-    const formattedBusinessTypeStats =
-      bookingsByBusinessType.map((item) => ({
-        _id: item.businessType,
-        count: item._count.businessType,
-      }));
-
-    return res.json({
-      success: true,
-      data: {
-        total: totalBookings,
-        pending: pendingBookings,
-        confirmed: confirmedBookings,
-        completed: completedBookings,
-        byBusinessType: formattedBusinessTypeStats,
-      },
-    });
-
-  } catch (error) {
-    console.error('❌ Error fetching booking statistics:', error);
-
-    return res.status(500).json({
-      success: false,
-      message: 'Error fetching booking statistics.',
-      error: error.message,
     });
   }
 });
